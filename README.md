@@ -343,6 +343,20 @@ Maps can be of any size and are fastest for key based lookup.
 
 ```elixir
 > %{:a => 1, 1 => ["list"], [2,3,4] => {"a", "b"}}
+> %{key: "value"} == %{:key => "value"}             # true
+> %{"key" => "value"} == %{:key => "value"}         # false
+> %{"key" => "value"}["key"]                        # "value"
+> %{"key" => "value"}["key2"]                       # nil
+> %{"key" => "value"}.key                           # ** (KeyError) key :key not found
+> %{"key" => "vaule"}.key2                          # ** (KeyError) key :key2 not found
+> %{:key => "value"}.key                            # "value"
+
+> newmap = %{oldmap | "key" => "newval"}
+or
+> newmap = Map.put(oldmap, key, newval)
+
+> Map.put_new(%{"key" => "value"}, "key", "newval") # %{"key" => "value"}
+> Map.put(    %{"key" => "value"}, "key", "newval") # %{"key" => "newval"}
 > %{:a => 1, :b => 2} == %{a: 1, b: 2}              # true
 > %{a: "one", b: "two", a: 1} == %{a: 1, b: "two"}  # true
 > %{a: "one", b: "two"} == %{b: "two", a: "one"}    # true
@@ -354,8 +368,8 @@ Maps can be of any size and are fastest for key based lookup.
 > %{ %{a: 1, b: 2, c: 3} | :a => 4, b: 5 }          # %{a: 4, b: 5, c: 3}
 > Map.merge( %{a: 1, b: 2}, %{a: 4, c: 3} )         # %{a: 4, b: 2, c: 3}
 > Map.put( %{a: 1}, :b, 2 ) == %{a: 1, b: 2}        # true
-> Kernel.get_in # TODO
-> Kernel.put_in # TODO
+> Kernel.get_in(%{"john" => %{age: 27}}, ["john", :age]) == 27
+> Kernel.put_in(%{"john" => %{age: 27}}, ["john", :age], 28) == %{"john" => %{age: 28}}
 ```
 
 ### Struct
@@ -1205,7 +1219,7 @@ The `~w` and `~W` sigils can take modifier to specify which type of value to cre
 ```elixir
 > ~w|alpha bravo charlie|a   # [:alpha, :bravo, :charlie]
 > ~w|alpha bravo charlie|c   # ['alpha', 'bravo', 'charlie']
-> ~w|alpha bravo charlie|s   # ["alpha, "bravo, "charlie"]
+> ~w|alpha bravo charlie|s   # ["alpha", "bravo", "charlie"]
 ```
 
 You can also define custom Sigils:
@@ -1240,7 +1254,7 @@ end
 ## Working with Files
 
 ## Erlang Interoperability
-Erlang modules can be called by prepnding them with a colon.
+Erlang modules can be called by prepending them with a colon.
 ```elixir
 :crypto.hash(:sha, "Elixir is the beez knees")
 |> :crypto.bytes_to_integer
