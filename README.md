@@ -1359,3 +1359,426 @@ end
 <hr>
 **Notes**
  - Regex images generated here: http://jex.im/regulex/
+
+# Process
+https://elixir-lang.org/getting-started/io-and-the-file-system.html
+
+```elixir
+> spawn fn -> 1 + 2 end   # #PID<0.43.0>
+> Process.alive?(pid)     # false
+> self()                  # #PID<0.41.0>
+> Process.alive?(self())  # true
+
+> send self(), {:hello, "world"}   # {hw}
+
+receive do
+  {:hello, msg} -> msg
+  {:world, msg} -> "won't match"
+end
+# "world"
+
+receive do
+   {:hello, msg}  -> msg
+after
+   1_000 -> "nothing after 1s"
+end
+# "nothing after 1s"
+
+
+> parent = self()   # #PID<0.41.0>
+> spawn fn -> send(parent, {:hello, self()}) end # #PID<0.48.0>
+
+receive do
+  {:hello, pid} -> "Got hello from #{inspect pid}"
+end
+# "Got hello from #PID<0.48.0>"
+```
+
+# Links
+```elixir
+> spawn fn -> raise "oops" end
+#PID<0.58.0>
+#[error] Process #PID<0.58.00> raised an exception
+#** (RuntimeError) oops
+#    (stdlib) erl_eval.erl:668: :erl_eval.do_apply/6
+```
+It merely logged an error but the parent process is still running.
+
+
+```elixir
+> self()
+#PID<0.41.0>
+iex> spawn_link fn -> raise "oops" end
+
+#** (EXIT from #PID<0.41.0>) evaluator process exited with reason: an exception was raised:
+#    ** (RuntimeError) oops
+#        (stdlib) erl_eval.erl:668: :erl_eval.do_apply/6
+#
+#[error] Process #PID<0.289.0> raised an exception
+#** (RuntimeError) oops
+#    (stdlib) erl_eval.erl:668: :erl_eval.do_apply/6
+```
+Because processes are linked, we now see a message saying the parent process, which is the shell process, has received an EXIT signal
+
+
+Tasks build on top of the spawn functions to provide better error reports and introspection:
+```elixir
+iex(1)> Task.start fn -> raise "oops" end
+{:ok, #PID<0.55.0>}
+
+#15:22:33.046 [error] Task #PID<0.55.0> started from #PID<0.53.0> terminating
+#** (RuntimeError) oops
+#    (stdlib) erl_eval.erl:668: :erl_eval.do_apply/6
+#    (elixir) lib/task/supervised.ex:85: Task.Supervised.do_apply/2
+#    (stdlib) proc_lib.erl:247: :proc_lib.init_p_do_apply/3
+#Function: #Function<20.99386804/0 in :erl_eval.expr/5>
+#    Args: []
+```
+We can write processes that loop infinitely, maintain state, and send and receive messages. As an example, let’s write a module that starts new processes that work as a key-value store in a file named kv.exs:
+
+```elixir
+defmodule KV do
+  def start_link do
+    Task.start_link(fn -> loop(%{}) end)
+  end
+
+  defp loop(map) do
+    receive do
+      {:get, key, caller} ->
+        send caller, Map.get(map, key)
+        loop(map)
+      {:put, key, value} ->
+        loop(Map.put(map, key, value))
+    end
+  end
+end
+
+iex> {:ok, pid} = KV.start_link
+{:ok, #PID<0.62.0>}
+iex> send pid, {:get, :hello, self()}
+{:get, :hello, #PID<0.41.0>}
+iex> flush()
+nil
+:ok
+
+iex> send pid, {:put, :hello, :world}
+{:put, :hello, :world}
+iex> send pid, {:get, :hello, self()}
+{:get, :hello, #PID<0.41.0>}
+iex> flush()
+:world
+:ok
+```
+It is also possible to register the pid, giving it a name, and allowing everyone that knows the name to send it messages:
+
+
+```elixir
+iex> Process.register(pid, :kv)
+true
+iex> send :kv, {:get, :hello, self()}
+{:get, :hello, #PID<0.41.0>}
+iex> flush()
+:world
+:ok
+```
+Using processes to maintain state and name registration are very common patterns in Elixir applications. However, most of the time, we won’t implement those patterns manually as above, but by using one of the many abstractions that ship with Elixir. For example, Elixir provides agents, which are simple abstractions around state:
+
+
+```elixir
+> {:ok, pid} = Agent.start_link(fn -> %{} end)
+{:ok, #PID<0.72.0>}
+iex> Agent.update(pid, fn map -> Map.put(map, :hello, :world) end)
+:ok
+iex> Agent.get(pid, fn map -> Map.get(map, :hello) end)
+:world
+
+iex> {:ok, pid} = Agent.start_link(fn -> %{} end)
+{:ok, #PID<0.72.0>}
+iex> Agent.update(pid, fn map -> Map.put(map, :hello, :world) end)
+:ok
+iex> Agent.get(pid, fn map -> Map.get(map, :hello) end)
+:world
+```
+
+
+# IO and the file system
+```elixir
+iex> IO.puts "hello world"
+hello world
+:ok
+iex> IO.gets "yes or no? "
+yes or no? yes
+"yes\n"
+
+iex> IO.puts :stderr, "hello world"
+hello world
+:ok
+
+iex> {:ok, file} = File.open "hello", [:write]
+{:ok, #PID<0.47.0>}
+iex> IO.binwrite file, "world"
+:ok
+iex> File.close file
+:ok
+iex> File.read "hello"
+{:ok, "world"}
+
+
+iex> File.read "hello"
+{:ok, "world"}
+iex> File.read! "hello"
+"world"
+iex> File.read "unknown"
+{:error, :enoent}
+iex> File.read! "unknown"
+** (File.Error) could not read file "unknown": no such file or directory
+
+case File.read(file) do
+  {:ok, body}      -> # do something with the `body`
+  {:error, reason} -> # handle the error caused by `reason`
+end
+
+{:ok, body} = File.read(file)
+
+iex> Path.join("foo", "bar")
+"foo/bar"
+iex> Path.expand("~/hello")
+"/Users/jose/hello"
+
+iex> {:ok, file} = File.open "hello", [:write]
+{:ok, #PID<0.47.0>}
+iex> pid = spawn fn ->
+...>  receive do: (msg -> IO.inspect msg)
+...> end
+#PID<0.57.0>
+iex> IO.write(pid, "hello")
+{:io_request, #PID<0.41.0>, #Reference<0.0.8.91>,
+ {:put_chars, :unicode, "hello"}}
+** (ErlangError) erlang error: :terminated
+
+
+iex> {:ok, pid} = StringIO.open("hello")
+{:ok, #PID<0.43.0>}
+iex> IO.read(pid, 2)
+"he"
+
+iex> IO.puts :stdio, "hello"
+hello
+:ok
+iex> IO.puts Process.group_leader, "hello"
+hello
+:ok
+
+iex> IO.puts 'hello world'
+hello world
+:ok
+iex> IO.puts ['hello', ?\s, "world"]
+hello world
+:ok
+```
+
+# Introduction to Mix
+The application works as a distributed key-value store. We are going to organize key-value pairs into buckets and distribute those buckets across multiple nodes. We will also build a simple client that allows us to connect to any of those nodes and send requests such as:
+
+```elixir
+CREATE shopping
+OK
+
+PUT shopping milk 1
+OK
+
+PUT shopping eggs 3
+OK
+
+GET shopping milk
+1
+OK
+
+DELETE shopping eggs
+OK
+```
+
+
+ - OTP (Open Telecom Platform) is a set of libraries that ships with Erlang. Erlang developers use OTP to build robust, fault-tolerant applications. In this chapter we will explore how many aspects from OTP integrate with Elixir, including supervision trees, event managers and more;
+
+ - Mix is a build tool that ships with Elixir that provides tasks for creating, compiling, testing your application, managing its dependencies and much more;
+
+ - ExUnit is a test-unit based framework that ships with Elixir;
+
+
+
+```bash
+$ mix new kv --module KV
+Mix will create a directory named kv with a few files in it:
+
+* creating README.md
+* creating .gitignore
+* creating mix.exs
+* creating config
+* creating config/config.exs
+* creating lib
+* creating lib/kv.ex
+* creating test
+* creating test/test_helper.exs
+* creating test/kv_test.exs
+```
+
+A file named mix.exs was generated inside our new project folder (kv) and its main responsibility is to configure our project. 
+
+Mix also generates a file at lib/kv.ex with a module containing exactly one function, called hello:
+
+```elixir
+defmodule KV do
+  @moduledoc """
+  Documentation for KV.
+  """
+
+  @doc """
+  Hello world.
+
+  ## Examples
+
+      iex> KV.hello
+      :world
+
+  """
+  def hello do
+    :world
+  end
+end
+```
+
+This structure is enough to compile our project:
+
+```bash
+$ cd kv
+$ mix compile
+```
+Will output:
+
+```
+Compiling 1 file (.ex)
+Generated kv app
+```
+
+Once the project is compiled, you can start an iex session inside the project by running:
+```bash
+$ iex -S mix
+```
+For this reason, we can already find a test/kv_test.exs corresponding to our lib/kv.ex file. It doesn’t do much at this point:
+
+```elixir
+defmodule KVTest do
+  use ExUnit.Case
+  doctest KV
+
+  test "greets the world" do
+    assert KV.hello() == :world
+  end
+end
+```
+This file will be required by Mix every time before we run our tests. We can run tests with mix test:
+
+```Compiled lib/kv.ex
+Generated kv app
+..
+
+Finished in 0.04 seconds
+2 tests, 0 failures
+
+Randomized with seed 540224
+```
+
+# Agents
+When it comes to processes though, we rarely hand-roll our own, instead we use the abstractions available in Elixir and OTP:
+ - Agent - Simple wrappers around state.
+ - GenServer - “Generic servers” (processes) that encapsulate state, provide sync and async calls, support code reloading, and more.
+ - Task - Asynchronous units of computation that allow spawning a process and potentially retrieving its result at a later time.
+
+Agents are simple wrappers around state. If all you want from a process is to keep state, agents are a great fit. Let’s start an iex session inside the project with:
+
+```
+$ iex -S mix
+```
+
+And play a bit with agents:
+
+```elixir
+iex> {:ok, agent} = Agent.start_link fn -> [] end
+{:ok, #PID<0.57.0>}
+iex> Agent.update(agent, fn list -> ["eggs" | list] end)
+:ok
+iex> Agent.get(agent, fn list -> list end)
+["eggs"]
+iex> Agent.stop(agent)
+:ok
+
+defmodule KV.BucketTest do
+  use ExUnit.Case, async: true
+
+  test "stores values by key" do
+    {:ok, bucket} = start_supervised KV.Bucket
+    assert KV.Bucket.get(bucket, "milk") == nil
+
+    KV.Bucket.put(bucket, "milk", 3)
+    assert KV.Bucket.get(bucket, "milk") == 3
+  end
+end
+
+defmodule KV.Bucket do
+  use Agent
+
+  @doc """
+  Starts a new bucket.
+  """
+  def start_link(_opts) do
+    Agent.start_link(fn -> %{} end)
+  end
+
+  @doc """
+  Gets a value from the `bucket` by `key`.
+  """
+  def get(bucket, key) do
+    Agent.get(bucket, &Map.get(&1, key))
+  end
+
+  @doc """
+  Puts the `value` for the given `key` in the `bucket`.
+  """
+  def put(bucket, key, value) do
+    Agent.update(bucket, &Map.put(&1, key, value))
+  end
+end
+
+@doc """
+Deletes `key` from `bucket`.
+
+Returns the current value of `key`, if `key` exists.
+"""
+def delete(bucket, key) do
+  Agent.get_and_update(bucket, &Map.pop(&1, key))    # Map.pop performed server-side
+end
+
+
+iex> Agent.start_link(fn -> %{} end, name: :shopping)
+{:ok, #PID<0.43.0>}
+iex> KV.Bucket.put(:shopping, "milk", 1)
+:ok
+iex> KV.Bucket.get(:shopping, "milk")
+1
+```
+
+# GenServer
+We will use a GenServer to create a registry process that can monitor the bucket processes. GenServer provides industrial strength functionality for building servers in both Elixir and OTP.
+
+A GenServer is implemented in two parts: the client API and the server callbacks. You can either combine both parts into a single module or you can separate them into a client module and a server module. The client and server run in separate processes, with the client passing messages back and forth to the server as its functions are called. Here we’ll use a single module for both the server callbacks and the client API.
+
+
+
+#http://awochna.com/2017/03/03/elixir-state-management.html
+
+#http://culttt.com/2016/08/24/understanding-genserver-elixir/
+
+# Supervisor and Application
+
+https://elixir-lang.org/getting-started/mix-otp/supervisor-and-application.html
